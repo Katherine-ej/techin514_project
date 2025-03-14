@@ -1,0 +1,126 @@
+#include <Arduino.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+
+
+// Define the I2C address of the BME280 sensor
+#define BME280_I2C_ADDR 0x76
+
+
+// Initialize the BME280 sensor
+Adafruit_BME280 bme;
+
+
+BLEServer* pServer = NULL;
+BLECharacteristic* pCharacteristic = NULL;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+unsigned long previousMillis = 0;
+const long interval = 2000; // Send data every 2 seconds
+
+
+// Define UUIDs for the BLE Service and Characteristic
+#define SERVICE_UUID        "90e3f8e8-6a54-4287-aad5-b3eaed884cd1"
+#define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
+
+
+class MyServerCallbacks : public BLEServerCallbacks {
+   void onConnect(BLEServer* pServer) {
+       deviceConnected = true;
+       Serial.println("Device connected");
+   };
+
+
+   void onDisconnect(BLEServer* pServer) {
+       deviceConnected = false;
+       Serial.println("Device disconnected");
+   }
+};
+
+
+void setup() {
+   Serial.begin(115200);
+   Serial.println("Starting BLE work!");
+
+
+   // Initialize the BME280 sensor
+   if (!bme.begin(BME280_I2C_ADDR)) {
+       Serial.println("Could not find a valid BME280 sensor, check wiring!");
+       while (1);
+   }
+   Serial.println("BME280 sensor initialized successfully!");
+
+
+   // Initialize BLE
+   BLEDevice::init("ShangmingYunqing_Server");
+   pServer = BLEDevice::createServer();
+   pServer->setCallbacks(new MyServerCallbacks());
+   BLEService *pService = pServer->createService(SERVICE_UUID);
+   pCharacteristic = pService->createCharacteristic(
+       CHARACTERISTIC_UUID,
+       BLECharacteristic::PROPERTY_READ |
+       BLECharacteristic::PROPERTY_WRITE |
+       BLECharacteristic::PROPERTY_NOTIFY
+   );
+   pCharacteristic->addDescriptor(new BLE2902());
+   pCharacteristic->setValue("Initial Value");
+   pService->start();
+
+
+   // Start BLE advertising
+   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+   pAdvertising->addServiceUUID(SERVICE_UUID);
+   pAdvertising->setScanResponse(true);
+   pAdvertising->setMinPreferred(0x06);  // Help iPhone connect
+   pAdvertising->setMinPreferred(0x12);
+   BLEDevice::startAdvertising();
+   Serial.println("BLE Server started. Waiting for connections...");
+}
+
+
+void loop() {
+   // Read temperature and humidity data from the BME280 sensor
+   float temperature = bme.readTemperature();  // Temperature (Celsius)
+   float humidity = bme.readHumidity();        // Humidity (percentage)
+
+
+   // Format the data as a string, e.g., "23.5,60.2"
+   char dataString[20];
+   snprintf(dataString, sizeof(dataString), "%.2f,%.2f", temperature, humidity);
+
+
+   // Send data if the device is connected
+   if (deviceConnected) {
+       unsigned long currentMillis = millis();
+       if (currentMillis - previousMillis >= interval) {
+           pCharacteristic->setValue(dataString);
+           pCharacteristic->notify();
+           Serial.print("Notify value: ");
+           Serial.println(dataString);
+           previousMillis = currentMillis;
+       }
+   }
+
+
+   // Handle disconnection
+   if (!deviceConnected && oldDeviceConnected) {
+       delay(500);  // Give the Bluetooth stack some time
+       pServer->startAdvertising();  // Restart advertising
+       Serial.println("Start advertising");
+       oldDeviceConnected = deviceConnected;
+   }
+
+
+   // Handle connection
+   if (deviceConnected && !oldDeviceConnected) {
+       oldDeviceConnected = deviceConnected;
+   }
+
+
+   delay(1000); // Main loop delay
+}
